@@ -376,3 +376,20 @@ be too performance-intensive to include out-of-the-box.
 Note that if `callback` returns `nil`, the helper will override the return value
 and instead cache `false` (so that it can determine that it already ran
 `callback` once and should not run it again).
+
+### by_bufroot(callback)
+
+Creates a function that caches the result of `callback`, indexed by `root`. On
+the first run of the created function, null-ls will call `callback` with a
+`params` table. On the next run, it will directly return the cached value
+without calling `callback` again.
+
+This is useful when the return value of `callback` is not expected to change
+over the lifetime of the buffer, which works well for `cwd` and
+`runtime_condition` callbacks. Users can use it as a simple shortcut to improve
+performance, and built-in authors can use it to add logic that would otherwise
+be too performance-intensive to include out-of-the-box.
+
+Note that if `callback` returns `nil`, the helper will override the return value
+and instead cache `false` (so that it can determine that it already ran
+`callback` once and should not run it again).

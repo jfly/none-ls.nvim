@@ -1,8 +1,19 @@
 local h = require("null-ls.helpers")
 local methods = require("null-ls.methods")
 local log = require("null-ls.logger")
+local client = require("null-ls.client")
+local async = require("plenary.async")
+local Job = require("plenary.job")
 
 local FORMATTING = methods.internal.FORMATTING
+
+local run_job = async.wrap(function(opts, done)
+    opts.on_exit = function(j, status)
+        done(status, j:result(), j:stderr_result())
+    end
+
+    Job:new(opts):start()
+end, 2)
 
 --- Return the command that `nix fmt` would run, or nil if we're not in a
 --- flake.
@@ -18,95 +29,136 @@ local FORMATTING = methods.internal.FORMATTING
 --- By doing this ourselves, we can cache the result.
 ---
 ---@return string|nil
-local find_nix_fmt = function(params)
-    -- Discovering currentSystem here lets us keep the *next* eval pure.
-    -- We want to keep that part pure as a performance improvement: an impure
-    -- eval that references the flake would copy *all* files (including
-    -- gitignored files!), which can be quite expensive if you've got many GiB
-    -- of artifacts in the directory. This optimization can probably go away
-    -- once the [Lazy trees PR] lands.
-    --
-    -- [Lazy trees PR]: https://github.com/NixOS/nix/pull/6530
-    local cp = vim.system({"nix", "eval", "--impure", "--expr", "builtins.currentSystem"}):wait()
-    if cp.code ~= 0 then
-        log:warn(string.format("unable to discover builtins.currentSystem from nix. stderr: %s", cp.stderr))
-        return nil
-    end
-    local nix_current_system = cp.stdout
+local find_nix_fmt = function(opts, done)
+    async.run(function()
+        local title = "discovering `nix fmt` entrypoint"
+        local progress_token = "nix-flake-fmt-discovery"
 
-    local eval_nix_formatter = [[
-      let
-        currentSystem = ]] .. nix_current_system .. [[;
-        # Various functions vendored from nixpkgs lib (to avoid adding a
-        # dependency on nixpkgs).
-        lib = rec {
-          getOutput = output: pkg:
-            if ! pkg ? outputSpecified || ! pkg.outputSpecified
-            then pkg.${output} or pkg.out or pkg
-            else pkg;
-          getBin = getOutput "bin";
-          # Simplified by removing various type assertions.
-          getExe' = x: y: "${getBin x}/bin/${y}";
-          # getExe is simplified to assume meta.mainProgram is specified.
-          getExe = x: getExe' x x.meta.mainProgram;
-        };
-      in
-      formatterBySystem:
-        if formatterBySystem ? ${currentSystem} then
-          let
-            formatter = formatterBySystem.${currentSystem};
-            drv = formatter.drvPath;
-            bin = lib.getExe formatter;
-          in
-            drv + "\n" + bin + "\n"
-        else
-          ""
-    ]]
+        client.send_progress_notification(progress_token, {
+            kind = "begin",
+            title = title,
+        })
 
-    cp = vim.system(
-        { 'nix', 'eval', '.#formatter', '--raw', '--apply', eval_nix_formatter},
-        { cwd = params.root }
-    ):wait()
-    if cp.code ~= 0 then
-        -- Dirty hack to check if the flake actually defines a formatter.
+        local root = opts.root
+
+        -- Discovering currentSystem here lets us keep the *next* eval pure.
+        -- We want to keep that part pure as a performance improvement: an impure
+        -- eval that references the flake would copy *all* files (including
+        -- gitignored files!), which can be quite expensive if you've got many GiB
+        -- of artifacts in the directory. This optimization can probably go away
+        -- once the [Lazy trees PR] lands.
         --
-        -- I cannot for the *life* of me figure out a less hacky way of
-        -- checking if a flake defines a formatter. Things I've tried:
-        --
-        --   - `nix eval . --apply '...'`: This doesn't not give me the flake
-        --                                 itself, it gives me the default package.
-        --   - `builtins.getFlake`: Every incantation I've tried requires
-        --                          `--impure`, which has the performance downside described above.
-        --   - `nix flake show --json .`: This works, but it can be quite slow:
-        --                                we end up evaluating all outputs, which can take a while for
-        --                                `nixosConfigurations`.
-        if cp.stderr:find("error: flake .+ does not provide attribute .+ or 'formatter'") then
-            log:warn("this flake does not define a `nix fmt` entrypoint")
-        else
-            log:error(string.format("unable discover 'nix fmt' command. stderr: %s", cp.stderr))
+        -- [Lazy trees PR]: https://github.com/NixOS/nix/pull/6530
+        local status, stdout_lines, stderr_lines = run_job({
+            command = "nix",
+            args = { "eval", "--impure", "--expr", "builtins.currentSystem" },
+        })
+
+        if status ~= 0 then
+            local stderr = table.concat(stderr_lines, "\n")
+            log:warn(string.format("unable to discover builtins.currentSystem from nix. stderr: %s", stderr))
+            return nil
         end
 
-        return nil
-    end
+        local nix_current_system_expr = stdout_lines[1]
 
-    if cp.stdout == "" then
-        log:warn("this flake does not define a formatter for your system: %s", nix_current_system)
-        return nil
-    end
+        local eval_nix_formatter = [[
+          let
+            currentSystem = ]] .. nix_current_system_expr .. [[;
+            # Various functions vendored from nixpkgs lib (to avoid adding a
+            # dependency on nixpkgs).
+            lib = rec {
+              getOutput = output: pkg:
+                if ! pkg ? outputSpecified || ! pkg.outputSpecified
+                then pkg.${output} or pkg.out or pkg
+                else pkg;
+              getBin = getOutput "bin";
+              # Simplified by removing various type assertions.
+              getExe' = x: y: "${getBin x}/bin/${y}";
+              # getExe is simplified to assume meta.mainProgram is specified.
+              getExe = x: getExe' x x.meta.mainProgram;
+            };
+          in
+          formatterBySystem:
+            if formatterBySystem ? ${currentSystem} then
+              let
+                formatter = formatterBySystem.${currentSystem};
+                drv = formatter.drvPath;
+                bin = lib.getExe formatter;
+              in
+                drv + "\n" + bin + "\n"
+            else
+              ""
+        ]]
 
-    -- stdout has 2 lines of output:
-    --  1. drv path
-    --  2. exe path
-    local drv_path, nix_fmt_path = cp.stdout:match("([^\n]+)\n([^\n]+)\n")
+        client.send_progress_notification(progress_token, {
+            kind = "report",
+            title = title,
+            message = "evaluating",
+        })
+        status, stdout_lines, stderr_lines = run_job({
+            command = "nix",
+            args = { "eval", ".#formatter", "--raw", "--apply", eval_nix_formatter },
+            cwd = root,
+        })
 
-    -- Build the derivation. This ensures that `nix_fmt_path` exists.
-    cp = vim.system({ 'nix', 'build', '--no-link', drv_path .. '^out' }):wait()
-    if cp.code ~= 0 then
-        log:warn(string.format("unable to build 'nix fmt' entrypoint. stderr: %s", cp.stderr))
-        return nil
-    end
+        if status ~= 0 then
+            local stderr = table.concat(stderr_lines, "\n")
+            -- Dirty hack to check if the flake actually defines a formatter.
+            --
+            -- I cannot for the *life* of me figure out a less hacky way of
+            -- checking if a flake defines a formatter. Things I've tried:
+            --
+            --   - `nix eval . --apply '...'`: This doesn't not give me the flake
+            --                                 itself, it gives me the default package.
+            --   - `builtins.getFlake`: Every incantation I've tried requires
+            --                          `--impure`, which has the performance downside described above.
+            --   - `nix flake show --json .`: This works, but it can be quite slow:
+            --                                we end up evaluating all outputs, which can take a while for
+            --                                `nixosConfigurations`.
+            if stderr:find("error: flake .+ does not provide attribute .+ or 'formatter'") then
+                log:warn("this flake does not define a `nix fmt` entrypoint")
+            else
+                log:error(string.format("unable discover 'nix fmt' command. stderr: %s", stderr))
+            end
 
-    return nix_fmt_path
+            return nil
+        end
+
+        if #stdout_lines == 0 then
+            log:warn("this flake does not define a formatter for your system: %s", nix_current_system_expr)
+            return nil
+        end
+
+        -- stdout has 2 lines of output:
+        --  1. drv path
+        --  2. exe path
+        local drv_path, nix_fmt_path = unpack(stdout_lines)
+
+        -- Build the derivation. This ensures that `nix_fmt_path` exists.
+        client.send_progress_notification(progress_token, {
+            kind = "report",
+            title = title,
+            message = "building",
+        })
+        status, stdout_lines, stderr_lines = run_job({
+            command = "nix",
+            args = { "build", "--no-link", drv_path .. "^out" },
+        })
+
+        if status ~= 0 then
+            log:warn(string.format("unable to build 'nix fmt' entrypoint. stderr: %s", job:stderr_results()))
+            return nil
+        end
+
+        client.send_progress_notification(progress_token, {
+            kind = "end",
+            title = title,
+            message = "done",
+        })
+
+        done(nix_fmt_path)
+    end)
 end
 
 return h.make_builtin({
@@ -135,8 +187,8 @@ return h.make_builtin({
             -- willing to format files passed explicitly, even if they're
             -- gitignored:
             -- https://github.com/numtide/treefmt/issues/435
-            '--walk=filesystem',
-            '$FILENAME',
+            "--walk=filesystem",
+            "$FILENAME",
         },
         to_temp_file = true,
     },

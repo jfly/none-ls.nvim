@@ -5,7 +5,7 @@ local log = require("null-ls.logger")
 local FORMATTING = methods.internal.FORMATTING
 
 --- Return the command that `nix fmt` would run, or nil if we're not in a
---- flake.
+--- flake with a formatter, or if we fail to discover the formatter somehow.
 ---
 --- The formatter must follow treefmt's [formatter
 --- spec](https://github.com/numtide/treefmt/blob/main/docs/formatter-spec.md).

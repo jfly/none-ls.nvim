@@ -130,18 +130,8 @@ return h.make_builtin({
         -- project, so cache it for the project root.
         dynamic_command = h.cache.by_bufroot(find_nix_fmt),
         args = {
-            -- `--walk` is specific to treefmt, and this formatter is supposed
-            -- to be generic.
-            -- Note: this could get converted to the new `TREEFMT_WALK`
-            -- environment variable once
-            -- <https://github.com/numtide/treefmt/commit/bac4a0d102e1142406d3a7d15106e5ba108bfcf8>
-            -- is fixed, which would at least play nicely with other types of
-            -- `nix fmt` entrypoints.
-            --
-            -- However, IMO, the real fix is to change treefmt itself to be
-            -- willing to format files passed explicitly, even if they're
-            -- gitignored:
-            -- https://github.com/numtide/treefmt/issues/435
+            -- Needed until <https://github.com/numtide/treefmt/issues/442> is
+            -- fixed, and a version of treefmt is released with the fix.
             "--walk=filesystem",
             "$FILENAME",
         },

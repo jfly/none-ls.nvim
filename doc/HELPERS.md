@@ -377,18 +377,13 @@ Note that if `callback` returns `nil`, the helper will override the return value
 and instead cache `false` (so that it can determine that it already ran
 `callback` once and should not run it again).
 
-### by_bufroot(callback)
+### by_file_mtimes(get_files, callback)
 
-Creates a function that caches the result of `callback`, indexed by `root`. On
-the first run of the created function, null-ls will call `callback` with a
-`params` table. On the next run, it will directly return the cached value
-without calling `callback` again.
-
-This is useful when the return value of `callback` is not expected to change
-over the lifetime of the buffer, which works well for `cwd` and
-`runtime_condition` callbacks. Users can use it as a simple shortcut to improve
-performance, and built-in authors can use it to add logic that would otherwise
-be too performance-intensive to include out-of-the-box.
+Creates a function that caches the result of `callback`. The cache is based on
+the modification time (mtime) of the files returned by the `get_files`
+function. `get_files` is invoked with a `params` table, and must result an
+array of files to watch for changes. `callback` will only be invoked if the set
+of files changes or if the mtime of those files changes.
 
 Note that if `callback` returns `nil`, the helper will override the return value
 and instead cache `false` (so that it can determine that it already ran

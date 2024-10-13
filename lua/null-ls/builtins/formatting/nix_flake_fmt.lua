@@ -128,7 +128,12 @@ return h.make_builtin({
         -- It can take a few moments to find the `nix fmt` entrypoint. The
         -- underlying command shouldn't change very often for a given
         -- project, so cache it for the project root.
-        dynamic_command = h.cache.by_bufroot(find_nix_fmt),
+        dynamic_command = h.cache.by_file_mtimes(function(params)
+            return {
+                vim.fn.resolve(params.root .. "/" .. "flake.nix"),
+                vim.fn.resolve(params.root .. "/" .. "flake.lock"),
+            }
+        end, find_nix_fmt),
         args = {
             -- Needed until <https://github.com/numtide/treefmt/issues/442> is
             -- fixed, and a version of treefmt is released with the fix.

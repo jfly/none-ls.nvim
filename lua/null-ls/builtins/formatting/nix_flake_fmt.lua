@@ -106,8 +106,15 @@ local find_nix_fmt = function(params)
     local drv_path, nix_fmt_path = cp.stdout:match("([^\n]+)\n([^\n]+)\n")
 
     -- Build the derivation. This ensures that `nix_fmt_path` exists.
-    cp = vim.system({ "nix", "--extra-experimental-features", "nix-command", "build", "--no-link", drv_path .. "^out" })
-        :wait()
+    cp = vim.system({
+        "nix",
+        "--extra-experimental-features",
+        "nix-command",
+        "build",
+        "--out-link",
+        vim.fn.tempname(),
+        drv_path .. "^out",
+    }):wait()
     if cp.code ~= 0 then
         log:warn(string.format("unable to build 'nix fmt' entrypoint. stderr: %s", cp.stderr))
         return nil
